@@ -371,9 +371,12 @@
           <div>Drag &amp; drop a photo here, or click to upload</div>
         </div>
         <div class="upload-preview hidden" id="uploadPreviewWrap">
-          <div class="polaroid" style="transform:rotate(-1.5deg);">
-            <div class="frame"><img id="uploadPreviewImg" src="" alt="preview"></div>
-            <div class="caption">Exhibit A</div>
+          <div style="display:flex;flex-direction:column;align-items:center;gap:8px;">
+            <div class="polaroid" style="transform:rotate(-1.5deg);">
+              <div class="frame"><img id="uploadPreviewImg" src="" alt="preview"></div>
+              <div class="caption">Exhibit A</div>
+            </div>
+            <div id="uploadSizeNote" style="font-size:12px;color:var(--muted);"></div>
           </div>
         </div>
       </div>
@@ -506,6 +509,7 @@
   var uploadPrompt = document.getElementById('uploadPrompt');
   var uploadPreviewWrap = document.getElementById('uploadPreviewWrap');
   var uploadPreviewImg = document.getElementById('uploadPreviewImg');
+  var uploadSizeNote = document.getElementById('uploadSizeNote');
 
   var correctNameInput = document.getElementById('correctName');
   var distractorInputs = [
@@ -542,26 +546,51 @@
     if(fileInput.files && fileInput.files[0]) handleFile(fileInput.files[0]);
   });
 
+  function compressImageAdaptive(img){
+    // Step down resolution/quality until the encoded photo is small enough
+    // that the final shareable link stays comfortably under every browser's
+    // URL length ceiling (Chromium-based browsers, including Brave, reject
+    // navigation to URLs over ~2M characters with a "URI too long" error).
+    var attempts = [
+      {maxDim:900, quality:0.72},
+      {maxDim:800, quality:0.65},
+      {maxDim:700, quality:0.6},
+      {maxDim:600, quality:0.55},
+      {maxDim:500, quality:0.5},
+      {maxDim:420, quality:0.45},
+      {maxDim:340, quality:0.4}
+    ];
+    var targetChars = 260000; // ~190KB of image data, leaves a wide safety margin
+    var best = null;
+    for(var i=0;i<attempts.length;i++){
+      var a = attempts[i];
+      var scale = Math.min(1, a.maxDim / Math.max(img.width, img.height));
+      var w = Math.max(1, Math.round(img.width * scale));
+      var h = Math.max(1, Math.round(img.height * scale));
+      var canvas = document.createElement('canvas');
+      canvas.width = w; canvas.height = h;
+      var ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0, w, h);
+      var dataUrl = canvas.toDataURL('image/jpeg', a.quality);
+      best = dataUrl;
+      if(dataUrl.length <= targetChars) break;
+    }
+    return best;
+  }
+
   function handleFile(file){
     if(!file.type || file.type.indexOf('image') !== 0) return;
     var reader = new FileReader();
     reader.onload = function(e){
       var img = new Image();
       img.onload = function(){
-        var maxDim = 900;
-        var scale = Math.min(1, maxDim / Math.max(img.width, img.height));
-        var w = Math.round(img.width * scale);
-        var h = Math.round(img.height * scale);
-        var canvas = document.createElement('canvas');
-        canvas.width = w; canvas.height = h;
-        var ctx = canvas.getContext('2d');
-        ctx.drawImage(img, 0, 0, w, h);
-        var quality = 0.72;
-        var dataUrl = canvas.toDataURL('image/jpeg', quality);
+        var dataUrl = compressImageAdaptive(img);
         compressedImageData = dataUrl;
         uploadPreviewImg.src = dataUrl;
         uploadPrompt.classList.add('hidden');
         uploadPreviewWrap.classList.remove('hidden');
+        var kb = Math.round(dataUrl.length * 0.75 / 1024); // approx decoded size
+        uploadSizeNote.textContent = 'Optimized for sharing (~' + kb + ' KB)';
       };
       img.src = e.target.result;
     };
@@ -624,8 +653,11 @@
       hints.length >= 1;
   }
 
+  var defaultFormErrorText = formError.textContent;
+
   generateBtn.addEventListener('click', function(){
     if(!validateForm()){
+      formError.textContent = defaultFormErrorText;
       formError.classList.add('show');
       successPanel.classList.add('hidden');
       return;
@@ -640,12 +672,24 @@
     };
 
     var json = JSON.stringify(quizData);
-    var encoded = encodeURIComponent(b64EncodeUnicode(json));
+    // Base64's alphabet (A-Z a-z 0-9 + / =) is already valid, unescaped,
+    // inside a URL fragment per RFC 3986 — no percent-encoding needed.
+    // (Wrapping it in encodeURIComponent previously inflated every "+", "/"
+    // and "=" into a 3-character %XX sequence, which is what pushed some
+    // links over the browser's URL-length limit.)
+    var encoded = b64EncodeUnicode(json);
     // Using a fragment (#quiz=...) rather than a query string (?quiz=...):
     // file:// URLs don't support query strings in every browser (Firefox in
     // particular tries to open a literal file of that name and throws an
     // I/O error), but fragments are purely client-side everywhere.
     var link = baseUrl() + '#quiz=' + encoded;
+
+    if(link.length > 1800000){
+      formError.textContent = 'That photo is still too large to fit in a link, even after compression. Please try a smaller or simpler image.';
+      formError.classList.add('show');
+      successPanel.classList.add('hidden');
+      return;
+    }
 
     shareLink.value = link;
     successPanel.classList.remove('hidden');
@@ -786,11 +830,18 @@
     var hash = window.location.hash || '';
     var q = null;
     if(hash.indexOf('#quiz=') === 0){
-      q = decodeURIComponent(hash.slice('#quiz='.length));
+      q = hash.slice('#quiz='.length);
     }
     if(q){
       try{
-        var json = b64DecodeUnicode(q);
+        var json;
+        try{
+          json = b64DecodeUnicode(q);
+        }catch(e1){
+          // Fallback: support links generated by an earlier version of this
+          // app that percent-encoded the payload before Base64-decoding.
+          json = b64DecodeUnicode(decodeURIComponent(q));
+        }
         var data = JSON.parse(json);
         if(data && data.img && data.correct && Array.isArray(data.distractors) && Array.isArray(data.hints) && data.hints.length){
           creatorView.classList.add('hidden');

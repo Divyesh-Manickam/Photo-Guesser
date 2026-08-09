@@ -640,8 +640,12 @@
     };
 
     var json = JSON.stringify(quizData);
-    var encoded = b64EncodeUnicode(json);
-    var link = baseUrl() + '?quiz=' + encoded;
+    var encoded = encodeURIComponent(b64EncodeUnicode(json));
+    // Using a fragment (#quiz=...) rather than a query string (?quiz=...):
+    // file:// URLs don't support query strings in every browser (Firefox in
+    // particular tries to open a literal file of that name and throws an
+    // I/O error), but fragments are purely client-side everywhere.
+    var link = baseUrl() + '#quiz=' + encoded;
 
     shareLink.value = link;
     successPanel.classList.remove('hidden');
@@ -779,8 +783,11 @@
 
   /* ---------------- Mode routing ---------------- */
   function boot(){
-    var params = new URLSearchParams(window.location.search);
-    var q = params.get('quiz');
+    var hash = window.location.hash || '';
+    var q = null;
+    if(hash.indexOf('#quiz=') === 0){
+      q = decodeURIComponent(hash.slice('#quiz='.length));
+    }
     if(q){
       try{
         var json = b64DecodeUnicode(q);
@@ -803,6 +810,7 @@
     topCreateBtn.classList.add('hidden');
   }
 
+  window.addEventListener('hashchange', boot);
   boot();
 })();
 </script>
